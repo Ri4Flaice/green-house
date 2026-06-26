@@ -36,6 +36,7 @@ export type ParseResult = {
 };
 
 export type SendItem = {
+  invoiceId?: string;
   rowNumber: number;
   clientName: string;
   phone: string;

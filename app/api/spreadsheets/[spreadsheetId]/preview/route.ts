@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getAccessToken, readSelectedSheetValues } from "@/lib/google";
 import { DEFAULT_TEMPLATE, parseWorkbookSheets } from "@/lib/orders";
+import { logServerError } from "@/lib/server-log";
 
 type RouteContext = {
   params: Promise<{
@@ -9,6 +11,8 @@ type RouteContext = {
 };
 
 export async function POST(request: Request, context: RouteContext) {
+  const session = await auth();
+
   try {
     const { spreadsheetId } = await context.params;
     const { sheetTitles, template } = (await request.json().catch(() => ({}))) as {
@@ -34,6 +38,12 @@ export async function POST(request: Request, context: RouteContext) {
       }
     });
   } catch (error) {
+    await logServerError({
+      endpoint: "POST /api/spreadsheets/[spreadsheetId]/preview",
+      error,
+      userEmail: session?.user?.email
+    });
+
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Не удалось подготовить предпросмотр"

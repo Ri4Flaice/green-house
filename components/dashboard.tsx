@@ -38,12 +38,62 @@ type PreviewResponse = {
 };
 
 type SendResult = {
+  invoiceId?: string;
   rowNumber: number;
   clientName: string;
   phone: string;
   status: "success" | "error";
   idMessage?: string;
   error?: string;
+};
+
+type RecipientStatus = "PENDING" | "SUCCESS" | "ERROR" | "SKIPPED";
+
+type BroadcastRecipient = {
+  id: string;
+  invoiceId: string;
+  rowNumber: number;
+  clientName: string;
+  rawName: string;
+  phone: string;
+  message: string;
+  sourceLabel: string;
+  sheetTitles: string[];
+  itemCount: number;
+  cashTotal: number;
+  remoteTotal: number;
+  status: RecipientStatus;
+  idMessage: string;
+  error: string;
+  sentAt: string | null;
+};
+
+type Broadcast = {
+  id: string;
+  status: "CREATED" | "SENDING" | "COMPLETED" | "FAILED";
+  totalCount: number;
+  sentCount: number;
+  errorCount: number;
+  skippedCount: number;
+  recipients: BroadcastRecipient[];
+};
+
+type CreateBroadcastResponse = {
+  broadcast?: Broadcast;
+  error?: string;
+  databaseConfigured?: boolean;
+};
+
+type ReportRow = {
+  id: string;
+  Листы: string;
+  Строка: number;
+  Клиент: string;
+  Телефон: string;
+  Статус: string;
+  "ID сообщения": string;
+  Ошибка: string;
+  Сообщение: string;
 };
 
 type LoadState = "idle" | "loading" | "error" | "success";
@@ -72,12 +122,30 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
   const [expandedReportRows, setExpandedReportRows] = useState<string[]>([]);
   const [previewPage, setPreviewPage] = useState(1);
   const [reportPage, setReportPage] = useState(1);
+  const [activeBroadcastId, setActiveBroadcastId] = useState("");
+  const [broadcastReport, setBroadcastReport] = useState<Broadcast | null>(null);
+  const [sendModalOpen, setSendModalOpen] = useState(false);
+  const [sendModalText, setSendModalText] = useState("");
 
   useEffect(() => {
     void loadSpreadsheets();
   }, []);
 
-  const reportRows = useMemo(() => {
+  const reportRows = useMemo<ReportRow[]>(() => {
+    if (broadcastReport) {
+      return broadcastReport.recipients.map((recipient) => ({
+        id: recipient.id,
+        Листы: recipient.sourceLabel,
+        Строка: recipient.rowNumber,
+        Клиент: recipient.clientName || recipient.rawName,
+        Телефон: recipient.phone,
+        Статус: getRecipientStatusLabel(recipient.status),
+        "ID сообщения": recipient.idMessage,
+        Ошибка: recipient.error,
+        Сообщение: recipient.message
+      }));
+    }
+
     const invoicesByPhone = new Map((preview?.invoices ?? []).map((invoice) => [invoice.normalizedPhone, invoice]));
     const successRows = sendResults.map((result) => ({
       id: `sent-${result.rowNumber}-${result.phone}`,
@@ -87,7 +155,8 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
       Телефон: result.phone,
       Статус: result.status === "success" ? "Отправлено" : "Ошибка",
       "ID сообщения": result.idMessage || "",
-      Ошибка: result.error || ""
+      Ошибка: result.error || "",
+      Сообщение: invoicesByPhone.get(result.phone)?.message ?? ""
     }));
 
     const invalidRows = (preview?.invalidRows ?? []).map((row) => ({
@@ -98,11 +167,12 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
       Телефон: row.rawPhone,
       Статус: "Пропущено",
       "ID сообщения": "",
-      Ошибка: row.reason
+      Ошибка: row.reason,
+      Сообщение: ""
     }));
 
     return [...successRows, ...invalidRows];
-  }, [preview?.invalidRows, preview?.invoices, sendResults]);
+  }, [broadcastReport, preview?.invalidRows, preview?.invoices, sendResults]);
 
   const filteredInvoices = useMemo(() => {
     const query = previewSearch.trim().toLowerCase();
@@ -180,6 +250,10 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setExpandedReportRows([]);
     setPreviewPage(1);
     setReportPage(1);
+    setActiveBroadcastId("");
+    setBroadcastReport(null);
+    setSendModalOpen(false);
+    setSendModalText("");
     setSendState("idle");
     setSheetSelectionState("loading");
     setSheetSelectionError("");
@@ -231,6 +305,10 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setExpandedReportRows([]);
     setPreviewPage(1);
     setReportPage(1);
+    setActiveBroadcastId("");
+    setBroadcastReport(null);
+    setSendModalOpen(false);
+    setSendModalText("");
     setSendState("idle");
 
     try {
@@ -255,8 +333,22 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     }
   }
 
+  async function fetchBroadcastReport(broadcastId: string) {
+    const response = await fetch(`/api/broadcasts/${encodeURIComponent(broadcastId)}`, {
+      cache: "no-store"
+    });
+    const data = (await response.json()) as { broadcast?: Broadcast; error?: string };
+
+    if (!response.ok || !data.broadcast) {
+      throw new Error(data.error ?? "Не удалось загрузить отчет рассылки");
+    }
+
+    setBroadcastReport(data.broadcast);
+    return data.broadcast;
+  }
+
   async function sendInvoices() {
-    if (!preview?.invoices.length) {
+    if (!preview?.invoices.length || !selectedSheet) {
       return;
     }
 
@@ -266,13 +358,50 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setSentCount(0);
     setExpandedReportRows([]);
     setReportPage(1);
+    setActiveBroadcastId("");
+    setBroadcastReport(null);
+    setSendModalOpen(true);
+    setSendModalText("Создаем журнал рассылки...");
 
-    const batchSize = 5;
+    const batchSize = 1;
     const allResults: SendResult[] = [];
+    let broadcastId = "";
+    let shouldUseDatabaseReport = true;
 
     try {
+      const createResponse = await fetch("/api/broadcasts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          spreadsheetId: selectedSheet.id,
+          spreadsheetName: selectedSheet.name,
+          sheetTitles: preview.sheetTitles,
+          invoices: preview.invoices,
+          invalidRows: preview.invalidRows
+        })
+      });
+      const createData = (await createResponse.json()) as CreateBroadcastResponse;
+
+      if (!createResponse.ok && createData.databaseConfigured === false) {
+        shouldUseDatabaseReport = false;
+        setSendModalText("База данных не настроена. Отправляем без сохранения журнала...");
+      } else if (!createResponse.ok || !createData.broadcast) {
+        throw new Error(createData.error ?? "Не удалось создать журнал рассылки");
+      }
+
+      if (createData.broadcast) {
+        broadcastId = createData.broadcast.id;
+        setActiveBroadcastId(broadcastId);
+        setBroadcastReport(createData.broadcast);
+      }
+
+      setSendModalText(`Отправляем сообщение 1 из ${preview.invoices.length}`);
+
       for (let start = 0; start < preview.invoices.length; start += batchSize) {
         const batch = preview.invoices.slice(start, start + batchSize).map((invoice) => ({
+          invoiceId: invoice.id,
           rowNumber: invoice.rowNumber,
           clientName: invoice.clientName,
           phone: invoice.normalizedPhone,
@@ -284,7 +413,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ items: batch })
+          body: JSON.stringify({ broadcastId, items: batch })
         });
         const data = (await response.json()) as { results?: SendResult[]; error?: string };
 
@@ -295,12 +424,31 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
         allResults.push(...(data.results ?? []));
         setSendResults([...allResults]);
         setSentCount(Math.min(start + batch.length, preview.invoices.length));
+        setSendModalText(
+          start + batch.length >= preview.invoices.length
+            ? "Получаем финальный отчет..."
+            : `Отправляем сообщение ${start + batch.length + 1} из ${preview.invoices.length}`
+        );
       }
 
+      if (shouldUseDatabaseReport && broadcastId) {
+        await fetchBroadcastReport(broadcastId);
+      }
+
+      setSendModalText("Рассылка завершена");
       setSendState("success");
     } catch (error) {
       setSendState("error");
       setSendError(error instanceof Error ? error.message : "Неизвестная ошибка отправки");
+      setSendModalText("Рассылка остановлена из-за ошибки");
+
+      if (broadcastId) {
+        try {
+          await fetchBroadcastReport(broadcastId);
+        } catch {
+          // The visible send error is more useful than a secondary report-loading error.
+        }
+      }
     }
   }
 
@@ -387,8 +535,11 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     );
   }
 
-  const successCount = sendResults.filter((result) => result.status === "success").length;
-  const errorCount = sendResults.filter((result) => result.status === "error").length;
+  const successCount = reportRows.filter((row) => row.Статус === "Отправлено").length;
+  const errorCount = reportRows.filter((row) => row.Статус === "Ошибка").length;
+  const skippedCount = reportRows.filter((row) => row.Статус === "Пропущено").length;
+  const sendTotal = preview?.invoices.length ?? 0;
+  const progressPercent = sendTotal > 0 ? Math.min(100, Math.round((sentCount / sendTotal) * 100)) : 0;
 
   return (
     <article className="panel work-panel">
@@ -408,6 +559,11 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
           setReportSearch("");
           setPreviewPage(1);
           setReportPage(1);
+          setActiveBroadcastId("");
+          setBroadcastReport(null);
+          setSendModalOpen(false);
+          setSendModalText("");
+          setSendState("idle");
         }}>
           К списку
         </button>
@@ -497,7 +653,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
           className="send-button"
           type="button"
           onClick={() => void sendInvoices()}
-          disabled={!preview?.invoices.length || sendState === "loading"}
+          disabled={!preview?.invoices.length || sendState === "loading" || sendModalOpen}
         >
           {sendState === "loading" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
           Начать рассылку
@@ -612,10 +768,18 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
 
       {sendState === "loading" ? <StatusLine icon={<Loader2 className="spin" size={18} />} text={`Отправка: ${sentCount} из ${preview?.invoices.length ?? 0}`} /> : null}
       {sendState === "error" ? <StatusLine icon={<AlertTriangle size={18} />} text={sendError} tone="error" /> : null}
-      {sendState === "success" ? (
+      {(sendState === "success" || (sendState === "error" && reportRows.length > 0)) ? (
         <section className="preview-section" aria-label="Отчет по рассылке">
           <div className="report-box">
-            <StatusLine icon={<CheckCircle2 size={18} />} text={`Рассылка завершена: успешно ${successCount}, ошибок ${errorCount}.`} tone="success" />
+            <StatusLine
+              icon={sendState === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+              text={
+                sendState === "success"
+                  ? `Рассылка завершена: успешно ${successCount}, ошибок ${errorCount}, пропущено ${skippedCount}.`
+                  : `Рассылка остановлена: успешно ${successCount}, ошибок ${errorCount}, пропущено ${skippedCount}.`
+              }
+              tone={sendState === "success" ? "success" : "error"}
+            />
             <button className="secondary-button" type="button" onClick={downloadReport} disabled={!reportRows.length}>
               <Download size={18} />
               Скачать CSV отчет
@@ -669,6 +833,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
                               <span>Строка: {row.Строка}</span>
                               <span>Ошибка: {row.Ошибка || "—"}</span>
                               <span>ID сообщения: {row["ID сообщения"] || "—"}</span>
+                              {row.Сообщение ? <pre>{row.Сообщение}</pre> : null}
                             </div>
                           </td>
                         </tr>
@@ -689,7 +854,132 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
           {!filteredReportRows.length ? <p className="muted">По этому поиску записей отчета не найдено.</p> : null}
         </section>
       ) : null}
+      {sendModalOpen ? (
+        <BroadcastProgressModal
+          state={sendState}
+          sentCount={sentCount}
+          totalCount={sendTotal}
+          successCount={successCount}
+          errorCount={errorCount}
+          skippedCount={skippedCount}
+          progressPercent={progressPercent}
+          message={sendModalText}
+          broadcastId={activeBroadcastId}
+          onClose={() => {
+            if (sendState !== "loading") {
+              setSendModalOpen(false);
+            }
+          }}
+          onDownload={downloadReport}
+          hasReport={reportRows.length > 0}
+        />
+      ) : null}
     </article>
+  );
+}
+
+function getRecipientStatusLabel(status: RecipientStatus) {
+  const labels: Record<RecipientStatus, string> = {
+    PENDING: "В очереди",
+    SUCCESS: "Отправлено",
+    ERROR: "Ошибка",
+    SKIPPED: "Пропущено"
+  };
+
+  return labels[status];
+}
+
+function BroadcastProgressModal({
+  state,
+  sentCount,
+  totalCount,
+  successCount,
+  errorCount,
+  skippedCount,
+  progressPercent,
+  message,
+  broadcastId,
+  onClose,
+  onDownload,
+  hasReport
+}: {
+  state: LoadState;
+  sentCount: number;
+  totalCount: number;
+  successCount: number;
+  errorCount: number;
+  skippedCount: number;
+  progressPercent: number;
+  message: string;
+  broadcastId: string;
+  onClose: () => void;
+  onDownload: () => void;
+  hasReport: boolean;
+}) {
+  const isSending = state === "loading";
+  const isSuccess = state === "success";
+  const isError = state === "error";
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="send-modal" role="dialog" aria-modal="true" aria-labelledby="send-modal-title">
+        <div className="send-modal-header">
+          <div>
+            <h2 id="send-modal-title">
+              {isSuccess ? "Рассылка завершена" : isError ? "Рассылка остановлена" : "Идет рассылка"}
+            </h2>
+            {broadcastId ? <p>Журнал: {broadcastId}</p> : null}
+          </div>
+          <button className="secondary-button" type="button" onClick={onClose} disabled={isSending}>
+            Закрыть
+          </button>
+        </div>
+
+        <div className="modal-status">
+          {isSuccess ? <CheckCircle2 size={26} /> : isError ? <AlertTriangle size={26} /> : <Loader2 className="spin" size={26} />}
+          <span>{message || "Подготавливаем рассылку..."}</span>
+        </div>
+
+        <div className="progress-block" aria-label="Прогресс рассылки">
+          <div className="progress-meta">
+            <span>
+              {sentCount} из {totalCount}
+            </span>
+            <strong>{progressPercent}%</strong>
+          </div>
+          <div className="progress-track">
+            <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+          </div>
+        </div>
+
+        {isSending ? (
+          <p className="modal-warning">
+            Не закрывайте и не перезагружайте страницу до завершения рассылки. Иначе новые сообщения не будут отправлены,
+            но уже обработанные результаты останутся в журнале.
+          </p>
+        ) : null}
+
+        {!isSending ? (
+          <div className="modal-summary">
+            <Metric label="Отправлено" value={successCount} />
+            <Metric label="Ошибок" value={errorCount} />
+            <Metric label="Пропущено" value={skippedCount} />
+          </div>
+        ) : null}
+
+        {!isSending ? (
+          <div className="modal-actions">
+            <button className="secondary-button" type="button" onClick={onDownload} disabled={!hasReport}>
+              <Download size={18} />
+              Скачать CSV отчет
+            </button>
+            <button className="primary-button" type="button" onClick={onClose}>
+              Готово
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

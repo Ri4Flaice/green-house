@@ -2,6 +2,7 @@ import { getPositiveIntegerEnv, requireEnv } from "@/lib/env";
 import type { SendItem } from "@/lib/orders";
 
 export type SendResult = {
+  invoiceId?: string;
   rowNumber: number;
   clientName: string;
   phone: string;
@@ -54,6 +55,7 @@ export async function sendWhatsAppBatch(items: SendItem[]) {
       const data = (await response.json()) as GreenApiSendResponse;
 
       results.push({
+        invoiceId: item.invoiceId,
         rowNumber: item.rowNumber,
         clientName: item.clientName,
         phone: item.phone,
@@ -62,6 +64,7 @@ export async function sendWhatsAppBatch(items: SendItem[]) {
       });
     } catch (error) {
       results.push({
+        invoiceId: item.invoiceId,
         rowNumber: item.rowNumber,
         clientName: item.clientName,
         phone: item.phone,

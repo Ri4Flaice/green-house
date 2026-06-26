@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BroadcastStatus {
+  CREATED
+  SENDING
+  COMPLETED
+  FAILED
+}
+
+enum RecipientStatus {
+  PENDING
+  SUCCESS
+  ERROR
+  SKIPPED
+}
+
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+model Broadcast {
+  id              String              @id @default(cuid())
+  userEmail       String
+  spreadsheetId   String
+  spreadsheetName String
+  sheetTitles     Json
+  status          BroadcastStatus     @default(CREATED)
+  totalCount      Int                 @default(0)
+  sentCount       Int                 @default(0)
+  errorCount      Int                 @default(0)
+  skippedCount    Int                 @default(0)
+  createdAt       DateTime            @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  updatedAt       DateTime            @updatedAt
+  recipients      BroadcastRecipient[]
+
+  @@index([userEmail, createdAt])
+  @@index([status, createdAt])
+}
+
+model BroadcastRecipient {
+  id          String          @id @default(cuid())
+  broadcastId String
+  invoiceId   String
+  rowNumber   Int
+  clientName  String
+  rawName     String
+  phone       String
+  message     String          @db.Text
+  sourceLabel String
+  sheetTitles Json
+  itemCount   Int             @default(0)
+  cashTotal   Int             @default(0)
+  remoteTotal Int             @default(0)
+  status      RecipientStatus @default(PENDING)
+  idMessage   String?
+  error       String?         @db.Text
+  sentAt      DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  broadcast   Broadcast       @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@unique([broadcastId, invoiceId])
+  @@index([broadcastId, status])
+  @@index([phone])
+}
+
+model AppLog {
+  id        String   @id @default(cuid())
+  level     LogLevel @default(ERROR)
+  endpoint  String
+  message   String   @db.Text
+  stack     String?  @db.Text
+  userEmail String?
+  context   Json?
+  createdAt DateTime @default(now())
+
+  @@index([level, createdAt])
+  @@index([endpoint, createdAt])
+}
