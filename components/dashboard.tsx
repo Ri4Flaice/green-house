@@ -1,0 +1,769 @@
+"use client";
+
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Eye,
+  FileSpreadsheet,
+  Search,
+  Loader2,
+  RefreshCw,
+  Send
+} from "lucide-react";
+import { DEFAULT_TEMPLATE, formatMoney, toCsv, type InvalidRow, type ParsedInvoice } from "@/lib/orders";
+
+type Spreadsheet = {
+  id: string;
+  name: string;
+  modifiedTime?: string;
+};
+
+type SpreadsheetSheet = {
+  title: string;
+  index: number;
+};
+
+type PreviewResponse = {
+  spreadsheetId: string;
+  sheetTitles: string[];
+  invoices: ParsedInvoice[];
+  invalidRows: InvalidRow[];
+  summary: {
+    valid: number;
+    invalid: number;
+  };
+  error?: string;
+};
+
+type SendResult = {
+  rowNumber: number;
+  clientName: string;
+  phone: string;
+  status: "success" | "error";
+  idMessage?: string;
+  error?: string;
+};
+
+type LoadState = "idle" | "loading" | "error" | "success";
+const PAGE_SIZE = 20;
+
+export function Dashboard({ userEmail }: { userEmail: string }) {
+  const [spreadsheets, setSpreadsheets] = useState<Spreadsheet[]>([]);
+  const [sheetsState, setSheetsState] = useState<LoadState>("idle");
+  const [sheetsError, setSheetsError] = useState("");
+  const [selectedSheet, setSelectedSheet] = useState<Spreadsheet | null>(null);
+  const [spreadsheetSheets, setSpreadsheetSheets] = useState<SpreadsheetSheet[]>([]);
+  const [selectedSheetTitles, setSelectedSheetTitles] = useState<string[]>([]);
+  const [sheetSelectionState, setSheetSelectionState] = useState<LoadState>("idle");
+  const [sheetSelectionError, setSheetSelectionError] = useState("");
+  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [previewState, setPreviewState] = useState<LoadState>("idle");
+  const [previewError, setPreviewError] = useState("");
+  const [sendState, setSendState] = useState<LoadState>("idle");
+  const [sendError, setSendError] = useState("");
+  const [sendResults, setSendResults] = useState<SendResult[]>([]);
+  const [sentCount, setSentCount] = useState(0);
+  const [previewSearch, setPreviewSearch] = useState("");
+  const [expandedInvoices, setExpandedInvoices] = useState<string[]>([]);
+  const [reportSearch, setReportSearch] = useState("");
+  const [expandedReportRows, setExpandedReportRows] = useState<string[]>([]);
+  const [previewPage, setPreviewPage] = useState(1);
+  const [reportPage, setReportPage] = useState(1);
+
+  useEffect(() => {
+    void loadSpreadsheets();
+  }, []);
+
+  const reportRows = useMemo(() => {
+    const invoicesByPhone = new Map((preview?.invoices ?? []).map((invoice) => [invoice.normalizedPhone, invoice]));
+    const successRows = sendResults.map((result) => ({
+      id: `sent-${result.rowNumber}-${result.phone}`,
+      Листы: invoicesByPhone.get(result.phone)?.sourceLabel ?? "",
+      Строка: result.rowNumber,
+      Клиент: result.clientName,
+      Телефон: result.phone,
+      Статус: result.status === "success" ? "Отправлено" : "Ошибка",
+      "ID сообщения": result.idMessage || "",
+      Ошибка: result.error || ""
+    }));
+
+    const invalidRows = (preview?.invalidRows ?? []).map((row) => ({
+      id: `invalid-${row.sheetTitle ?? "sheet"}-${row.rowNumber}`,
+      Листы: row.sheetTitle ?? "",
+      Строка: row.rowNumber,
+      Клиент: row.rawName,
+      Телефон: row.rawPhone,
+      Статус: "Пропущено",
+      "ID сообщения": "",
+      Ошибка: row.reason
+    }));
+
+    return [...successRows, ...invalidRows];
+  }, [preview?.invalidRows, preview?.invoices, sendResults]);
+
+  const filteredInvoices = useMemo(() => {
+    const query = previewSearch.trim().toLowerCase();
+
+    if (!query) {
+      return preview?.invoices ?? [];
+    }
+
+    return (preview?.invoices ?? []).filter((invoice) => {
+      const searchableText = [
+        invoice.clientName,
+        invoice.rawName,
+        invoice.rawPhone,
+        invoice.normalizedPhone,
+        invoice.sourceLabel,
+        invoice.items.map((item) => `${item.name} ${item.rawPrice}`).join(" ")
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return searchableText.includes(query);
+    });
+  }, [preview?.invoices, previewSearch]);
+
+  const filteredReportRows = useMemo(() => {
+    const query = reportSearch.trim().toLowerCase();
+
+    if (!query) {
+      return reportRows;
+    }
+
+    return reportRows.filter((row) =>
+      Object.values(row)
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [reportRows, reportSearch]);
+
+  const previewTotalPages = Math.max(1, Math.ceil(filteredInvoices.length / PAGE_SIZE));
+  const reportTotalPages = Math.max(1, Math.ceil(filteredReportRows.length / PAGE_SIZE));
+  const currentPreviewPage = Math.min(previewPage, previewTotalPages);
+  const currentReportPage = Math.min(reportPage, reportTotalPages);
+  const paginatedInvoices = filteredInvoices.slice((currentPreviewPage - 1) * PAGE_SIZE, currentPreviewPage * PAGE_SIZE);
+  const paginatedReportRows = filteredReportRows.slice((currentReportPage - 1) * PAGE_SIZE, currentReportPage * PAGE_SIZE);
+
+  async function loadSpreadsheets() {
+    setSheetsState("loading");
+    setSheetsError("");
+
+    try {
+      const response = await fetch("/api/spreadsheets", { cache: "no-store" });
+      const data = (await response.json()) as { spreadsheets?: Spreadsheet[]; error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Не удалось загрузить таблицы");
+      }
+
+      setSpreadsheets(data.spreadsheets ?? []);
+      setSheetsState("success");
+    } catch (error) {
+      setSheetsState("error");
+      setSheetsError(error instanceof Error ? error.message : "Неизвестная ошибка");
+    }
+  }
+
+  async function selectSpreadsheet(sheet: Spreadsheet) {
+    setSelectedSheet(sheet);
+    setSpreadsheetSheets([]);
+    setSelectedSheetTitles([]);
+    setPreview(null);
+    setSendResults([]);
+    setSentCount(0);
+    setExpandedInvoices([]);
+    setExpandedReportRows([]);
+    setPreviewPage(1);
+    setReportPage(1);
+    setSendState("idle");
+    setSheetSelectionState("loading");
+    setSheetSelectionError("");
+
+    try {
+      const response = await fetch(`/api/spreadsheets/${encodeURIComponent(sheet.id)}/sheets`, {
+        cache: "no-store"
+      });
+      const data = (await response.json()) as { sheets?: SpreadsheetSheet[]; error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Не удалось загрузить листы таблицы");
+      }
+
+      const loadedSheets = data.sheets ?? [];
+      const defaultSelection = loadedSheets[0]?.title ? [loadedSheets[0].title] : [];
+
+      setSpreadsheetSheets(loadedSheets);
+      setSelectedSheetTitles(defaultSelection);
+      setSheetSelectionState("success");
+
+      if (defaultSelection.length) {
+        await buildPreview(sheet, defaultSelection);
+      }
+    } catch (error) {
+      setSheetSelectionState("error");
+      setSheetSelectionError(error instanceof Error ? error.message : "Неизвестная ошибка");
+    }
+  }
+
+  async function buildPreview(sheet = selectedSheet, sheetTitles = selectedSheetTitles) {
+    if (!sheet) {
+      return;
+    }
+
+    if (!sheetTitles.length) {
+      setPreviewState("error");
+      setPreviewError("Выберите хотя бы один лист таблицы");
+      return;
+    }
+
+    setSelectedSheet(sheet);
+    setPreviewState("loading");
+    setPreviewError("");
+    setPreview(null);
+    setSendResults([]);
+    setSentCount(0);
+    setExpandedInvoices([]);
+    setExpandedReportRows([]);
+    setPreviewPage(1);
+    setReportPage(1);
+    setSendState("idle");
+
+    try {
+      const response = await fetch(`/api/spreadsheets/${encodeURIComponent(sheet.id)}/preview`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ sheetTitles, template })
+      });
+      const data = (await response.json()) as PreviewResponse;
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Не удалось подготовить предпросмотр");
+      }
+
+      setPreview(data);
+      setPreviewState("success");
+    } catch (error) {
+      setPreviewState("error");
+      setPreviewError(error instanceof Error ? error.message : "Неизвестная ошибка");
+    }
+  }
+
+  async function sendInvoices() {
+    if (!preview?.invoices.length) {
+      return;
+    }
+
+    setSendState("loading");
+    setSendError("");
+    setSendResults([]);
+    setSentCount(0);
+    setExpandedReportRows([]);
+    setReportPage(1);
+
+    const batchSize = 5;
+    const allResults: SendResult[] = [];
+
+    try {
+      for (let start = 0; start < preview.invoices.length; start += batchSize) {
+        const batch = preview.invoices.slice(start, start + batchSize).map((invoice) => ({
+          rowNumber: invoice.rowNumber,
+          clientName: invoice.clientName,
+          phone: invoice.normalizedPhone,
+          message: invoice.message
+        }));
+
+        const response = await fetch("/api/send-batch", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ items: batch })
+        });
+        const data = (await response.json()) as { results?: SendResult[]; error?: string };
+
+        if (!response.ok) {
+          throw new Error(data.error ?? "Не удалось отправить батч сообщений");
+        }
+
+        allResults.push(...(data.results ?? []));
+        setSendResults([...allResults]);
+        setSentCount(Math.min(start + batch.length, preview.invoices.length));
+      }
+
+      setSendState("success");
+    } catch (error) {
+      setSendState("error");
+      setSendError(error instanceof Error ? error.message : "Неизвестная ошибка отправки");
+    }
+  }
+
+  function downloadReport() {
+    const csv = toCsv(
+      reportRows.map((row) => ({
+        Листы: row.Листы,
+        Строка: row.Строка,
+        Клиент: row.Клиент,
+        Телефон: row.Телефон,
+        Статус: row.Статус,
+        "ID сообщения": row["ID сообщения"],
+        Ошибка: row.Ошибка
+      }))
+    );
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `flower-orders-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function toggleExpandedInvoice(invoiceId: string) {
+    setExpandedInvoices((currentIds) =>
+      currentIds.includes(invoiceId)
+        ? currentIds.filter((id) => id !== invoiceId)
+        : [...currentIds, invoiceId]
+    );
+  }
+
+  function toggleExpandedReportRow(rowId: string) {
+    setExpandedReportRows((currentIds) =>
+      currentIds.includes(rowId)
+        ? currentIds.filter((id) => id !== rowId)
+        : [...currentIds, rowId]
+    );
+  }
+
+  function updatePreviewSearch(value: string) {
+    setPreviewSearch(value);
+    setPreviewPage(1);
+  }
+
+  function updateReportSearch(value: string) {
+    setReportSearch(value);
+    setReportPage(1);
+  }
+
+  if (!selectedSheet) {
+    return (
+      <article className="panel sheets-panel">
+        <div className="panel-heading">
+          <div>
+            <h1>Ваши таблицы Google Sheets</h1>
+            <p>{userEmail}</p>
+          </div>
+          <button className="icon-button" type="button" onClick={loadSpreadsheets} title="Обновить список">
+            {sheetsState === "loading" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+          </button>
+        </div>
+
+        {sheetsState === "loading" ? <StatusLine icon={<Loader2 className="spin" size={18} />} text="Загружаем таблицы..." /> : null}
+        {sheetsState === "error" ? <StatusLine icon={<AlertTriangle size={18} />} text={sheetsError} tone="error" /> : null}
+        {sheetsState === "success" && spreadsheets.length === 0 ? (
+          <StatusLine icon={<FileSpreadsheet size={18} />} text="Таблицы не найдены. Проверьте доступ Google Drive." />
+        ) : null}
+
+        <div className="sheet-list">
+          {spreadsheets.map((sheet) => (
+            <div className="sheet-row" key={sheet.id}>
+              <div className="sheet-name">
+                <FileSpreadsheet size={18} />
+                <span>{sheet.name}</span>
+              </div>
+              <button className="primary-button compact" type="button" onClick={() => void selectSpreadsheet(sheet)}>
+                Выбрать
+              </button>
+            </div>
+          ))}
+        </div>
+      </article>
+    );
+  }
+
+  const successCount = sendResults.filter((result) => result.status === "success").length;
+  const errorCount = sendResults.filter((result) => result.status === "error").length;
+
+  return (
+    <article className="panel work-panel">
+      <div className="panel-heading">
+        <div>
+          <h1>Выбрана таблица</h1>
+          <p>{selectedSheet.name}</p>
+          <p>Google Sheet ID: {selectedSheet.id}</p>
+          {preview?.sheetTitles?.length ? <p>Листы: {preview.sheetTitles.join(", ")}</p> : null}
+        </div>
+        <button className="secondary-button" type="button" onClick={() => {
+          setSelectedSheet(null);
+          setPreview(null);
+          setSpreadsheetSheets([]);
+          setSelectedSheetTitles([]);
+          setPreviewSearch("");
+          setReportSearch("");
+          setPreviewPage(1);
+          setReportPage(1);
+        }}>
+          К списку
+        </button>
+      </div>
+
+      <section className="sheet-picker" aria-label="Листы таблицы">
+        <div className="subheading-row">
+          <h2>Листы таблицы</h2>
+          <div className="mini-actions">
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setSelectedSheetTitles(spreadsheetSheets.map((sheet) => sheet.title))}
+              disabled={!spreadsheetSheets.length}
+            >
+              Выбрать все
+            </button>
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setSelectedSheetTitles([])}
+              disabled={!spreadsheetSheets.length}
+            >
+              Снять все
+            </button>
+          </div>
+        </div>
+
+        {sheetSelectionState === "loading" ? <StatusLine icon={<Loader2 className="spin" size={18} />} text="Загружаем листы..." /> : null}
+        {sheetSelectionState === "error" ? <StatusLine icon={<AlertTriangle size={18} />} text={sheetSelectionError} tone="error" /> : null}
+        {sheetSelectionState === "success" && spreadsheetSheets.length === 0 ? (
+          <StatusLine icon={<FileSpreadsheet size={18} />} text="В таблице нет видимых листов." />
+        ) : null}
+
+        <div className="sheet-chip-list">
+          {spreadsheetSheets.map((sheet) => {
+            const checked = selectedSheetTitles.includes(sheet.title);
+
+            return (
+              <label className="sheet-chip" key={sheet.title}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(event) => {
+                    setSelectedSheetTitles((currentTitles) =>
+                      event.target.checked
+                        ? [...currentTitles, sheet.title]
+                        : currentTitles.filter((title) => title !== sheet.title)
+                    );
+                  }}
+                />
+                <span>{sheet.title}</span>
+              </label>
+            );
+          })}
+        </div>
+      </section>
+
+      <label className="template-label" htmlFor="template">
+        Шаблон сообщения
+      </label>
+      <div className="tokens" aria-label="Доступные переменные шаблона">
+        <span>{'{имя_клиента}'}</span>
+        <span>{'{список_заказов}'}</span>
+        <span>{'{сумма_наличными}'}</span>
+        <span>{'{сумма_удаленно}'}</span>
+      </div>
+      <textarea
+        id="template"
+        className="template-input"
+        value={template}
+        onChange={(event) => setTemplate(event.target.value)}
+        spellCheck={false}
+      />
+
+      <div className="action-row">
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => void buildPreview()}
+          disabled={previewState === "loading" || !selectedSheetTitles.length}
+        >
+          {previewState === "loading" ? <Loader2 className="spin" size={18} /> : <Eye size={18} />}
+          Обновить предпросмотр
+        </button>
+        <button
+          className="send-button"
+          type="button"
+          onClick={() => void sendInvoices()}
+          disabled={!preview?.invoices.length || sendState === "loading"}
+        >
+          {sendState === "loading" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+          Начать рассылку
+        </button>
+      </div>
+
+      {previewState === "loading" ? <StatusLine icon={<Loader2 className="spin" size={18} />} text="Готовим счета..." /> : null}
+      {previewState === "error" ? <StatusLine icon={<AlertTriangle size={18} />} text={previewError} tone="error" /> : null}
+
+      {preview ? (
+        <>
+          <div className="metrics">
+            <Metric label="Готово к отправке" value={preview.summary.valid} />
+            <Metric label="Будет пропущено" value={preview.summary.invalid} />
+            <Metric label="Отправлено" value={sentCount} />
+          </div>
+
+          <section className="preview-section" aria-label="Предпросмотр счетов">
+            <div className="section-header">
+              <h2>Предпросмотр</h2>
+              <SearchBox
+                value={previewSearch}
+                onChange={updatePreviewSearch}
+                placeholder="Поиск по клиенту, телефону, листу или товару"
+              />
+            </div>
+            <div className="table-shell">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Клиент</th>
+                    <th>Телефон</th>
+                    <th>Листы</th>
+                    <th>Позиций</th>
+                    <th>Наличными</th>
+                    <th>Удаленно</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedInvoices.map((invoice) => {
+                    const expanded = expandedInvoices.includes(invoice.id);
+
+                    return (
+                      <Fragment key={invoice.id}>
+                        <tr className="data-row" onClick={() => toggleExpandedInvoice(invoice.id)}>
+                          <td data-label="Клиент">{invoice.clientName || invoice.rawName || "Без имени"}</td>
+                          <td data-label="Телефон">{invoice.normalizedPhone}</td>
+                          <td data-label="Листы">{invoice.sourceLabel || "—"}</td>
+                          <td data-label="Позиций">{invoice.items.length}</td>
+                          <td data-label="Наличными">{formatMoney(invoice.cashTotal)} ₸</td>
+                          <td data-label="Удаленно">{formatMoney(invoice.remoteTotal)} ₸</td>
+                          <td data-label="">
+                            <button className="text-button" type="button" onClick={(event) => {
+                              event.stopPropagation();
+                              toggleExpandedInvoice(invoice.id);
+                            }}>
+                              {expanded ? "Скрыть" : "Открыть"}
+                            </button>
+                          </td>
+                        </tr>
+                        {expanded ? (
+                          <tr className="details-row">
+                            <td colSpan={7}>
+                              <div className="row-details">
+                                <div className="order-lines">
+                                  {invoice.items.map((item, itemIndex) => (
+                                    <span key={`${invoice.id}-${itemIndex}`}>
+                                      {item.sheetTitle && invoice.sheetTitles.length > 1 ? `[${item.sheetTitle}] ` : ""}
+                                      {item.name} — {item.rawPrice}
+                                    </span>
+                                  ))}
+                                </div>
+                                <pre>{invoice.message}</pre>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <Pagination
+              page={currentPreviewPage}
+              totalPages={previewTotalPages}
+              totalItems={filteredInvoices.length}
+              pageSize={PAGE_SIZE}
+              onPageChange={setPreviewPage}
+            />
+            {!filteredInvoices.length ? <p className="muted">По этому поиску счетов не найдено.</p> : null}
+          </section>
+
+          {preview.invalidRows.length ? (
+            <section className="preview-section" aria-label="Ошибки строк">
+              <h2>Строки с ошибками</h2>
+              <div className="invalid-list">
+                {preview.invalidRows.slice(0, 8).map((row) => (
+                  <div className="invalid-row" key={row.id}>
+                    <AlertTriangle size={17} />
+                    <span>
+                      {row.sheetTitle ? `Лист "${row.sheetTitle}", ` : ""}строка {row.rowNumber}: {row.reason}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </>
+      ) : null}
+
+      {sendState === "loading" ? <StatusLine icon={<Loader2 className="spin" size={18} />} text={`Отправка: ${sentCount} из ${preview?.invoices.length ?? 0}`} /> : null}
+      {sendState === "error" ? <StatusLine icon={<AlertTriangle size={18} />} text={sendError} tone="error" /> : null}
+      {sendState === "success" ? (
+        <section className="preview-section" aria-label="Отчет по рассылке">
+          <div className="report-box">
+            <StatusLine icon={<CheckCircle2 size={18} />} text={`Рассылка завершена: успешно ${successCount}, ошибок ${errorCount}.`} tone="success" />
+            <button className="secondary-button" type="button" onClick={downloadReport} disabled={!reportRows.length}>
+              <Download size={18} />
+              Скачать CSV отчет
+            </button>
+          </div>
+          <div className="section-header">
+            <h2>Отчет</h2>
+            <SearchBox
+              value={reportSearch}
+              onChange={updateReportSearch}
+              placeholder="Поиск по статусу, клиенту, телефону или ID"
+            />
+          </div>
+          <div className="table-shell">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Статус</th>
+                  <th>Клиент</th>
+                  <th>Телефон</th>
+                  <th>Листы</th>
+                  <th>ID сообщения</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedReportRows.map((row) => {
+                  const expanded = expandedReportRows.includes(row.id);
+
+                  return (
+                    <Fragment key={row.id}>
+                      <tr className="data-row" onClick={() => toggleExpandedReportRow(row.id)}>
+                        <td data-label="Статус">{row.Статус}</td>
+                        <td data-label="Клиент">{row.Клиент || "—"}</td>
+                        <td data-label="Телефон">{row.Телефон || "—"}</td>
+                        <td data-label="Листы">{row.Листы || "—"}</td>
+                        <td data-label="ID сообщения">{row["ID сообщения"] || "—"}</td>
+                        <td data-label="">
+                          <button className="text-button" type="button" onClick={(event) => {
+                            event.stopPropagation();
+                            toggleExpandedReportRow(row.id);
+                          }}>
+                            {expanded ? "Скрыть" : "Открыть"}
+                          </button>
+                        </td>
+                      </tr>
+                      {expanded ? (
+                        <tr className="details-row">
+                          <td colSpan={6}>
+                            <div className="row-details">
+                              <span>Строка: {row.Строка}</span>
+                              <span>Ошибка: {row.Ошибка || "—"}</span>
+                              <span>ID сообщения: {row["ID сообщения"] || "—"}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pagination
+            page={currentReportPage}
+            totalPages={reportTotalPages}
+            totalItems={filteredReportRows.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setReportPage}
+          />
+          {!filteredReportRows.length ? <p className="muted">По этому поиску записей отчета не найдено.</p> : null}
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
+function StatusLine({ icon, text, tone = "default" }: { icon: ReactNode; text: string; tone?: "default" | "error" | "success" }) {
+  return (
+    <div className={`status-line ${tone}`}>
+      {icon}
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function Pagination({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
+  if (totalItems <= pageSize) {
+    return null;
+  }
+
+  const startItem = (page - 1) * pageSize + 1;
+  const endItem = Math.min(page * pageSize, totalItems);
+
+  return (
+    <div className="pagination">
+      <span>
+        {startItem}-{endItem} из {totalItems}
+      </span>
+      <div className="pagination-actions">
+        <button className="secondary-button" type="button" onClick={() => onPageChange(page - 1)} disabled={page <= 1}>
+          Назад
+        </button>
+        <span>
+          {page} / {totalPages}
+        </span>
+        <button className="secondary-button" type="button" onClick={() => onPageChange(page + 1)} disabled={page >= totalPages}>
+          Далее
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SearchBox({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <label className="search-box">
+      <Search size={17} />
+      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+    </label>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="metric">
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
