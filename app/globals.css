@@ -247,26 +247,78 @@ p {
   margin-bottom: 12px;
 }
 
-.tokens span {
+.token-button {
   padding: 5px 9px;
+  border: 0;
   border-radius: 999px;
   color: #ffffff;
   background: linear-gradient(100deg, var(--purple), var(--blue));
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.2;
+  transition: filter 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.token-button:hover,
+.token-button:focus-visible {
+  filter: brightness(1.06);
+  box-shadow: 0 7px 16px rgba(48, 91, 215, 0.2);
+}
+
+.token-button:active {
+  transform: translateY(1px);
+}
+
+.template-editor {
+  position: relative;
+  display: grid;
+}
+
+.template-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  padding: 18px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.template-highlight-token {
+  border-radius: 5px;
+  color: inherit;
+  background: rgba(122, 207, 142, 0.34);
+  box-shadow: 0 0 0 2px rgba(122, 207, 142, 0.34);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .template-input {
+  position: relative;
+  z-index: 1;
   width: 100%;
   min-height: 158px;
   resize: vertical;
   padding: 18px;
   border: 2px solid #8ab7d3;
   border-radius: 8px;
-  color: var(--text);
-  background: #ffffff;
+  color: transparent;
+  caret-color: var(--text);
+  -webkit-text-fill-color: transparent;
+  background: transparent;
   line-height: 1.45;
   outline: none;
+}
+
+.template-input::selection {
+  color: transparent;
+  background: rgba(22, 136, 242, 0.16);
 }
 
 .template-input:focus {

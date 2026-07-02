@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -98,8 +98,13 @@ type ReportRow = {
 
 type LoadState = "idle" | "loading" | "error" | "success";
 const PAGE_SIZE = 20;
+const TEMPLATE_TOKENS = ["{имя_клиента}", "{список_заказов}", "{сумма_наличными}", "{сумма_удаленно}"];
+const TEMPLATE_TOKEN_DRAG_TYPE = "text/flower-order-template-token";
+const TEMPLATE_TOKEN_PATTERN = new RegExp(`(${TEMPLATE_TOKENS.map(escapeRegExp).join("|")})`, "g");
 
 export function Dashboard({ userEmail }: { userEmail: string }) {
+  const templateInputRef = useRef<HTMLTextAreaElement>(null);
+  const [templateScrollTop, setTemplateScrollTop] = useState(0);
   const [spreadsheets, setSpreadsheets] = useState<Spreadsheet[]>([]);
   const [sheetsState, setSheetsState] = useState<LoadState>("idle");
   const [sheetsError, setSheetsError] = useState("");
@@ -499,6 +504,46 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setReportPage(1);
   }
 
+  function insertTemplateToken(token: string) {
+    const input = templateInputRef.current;
+
+    if (!input) {
+      setTemplate((currentTemplate) => `${currentTemplate}${token}`);
+      return;
+    }
+
+    const selectionStart = input.selectionStart ?? template.length;
+    const selectionEnd = input.selectionEnd ?? selectionStart;
+    const nextTemplate = `${template.slice(0, selectionStart)}${token}${template.slice(selectionEnd)}`;
+    const nextCursorPosition = selectionStart + token.length;
+
+    setTemplate(nextTemplate);
+
+    window.requestAnimationFrame(() => {
+      input.focus();
+      input.setSelectionRange(nextCursorPosition, nextCursorPosition);
+    });
+  }
+
+  function handleTemplateTokenDragStart(event: DragEvent<HTMLButtonElement>, token: string) {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(TEMPLATE_TOKEN_DRAG_TYPE, token);
+    event.dataTransfer.setData("text/plain", token);
+  }
+
+  function handleTemplateDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const token =
+      event.dataTransfer.getData(TEMPLATE_TOKEN_DRAG_TYPE) ||
+      event.dataTransfer.getData("text/plain");
+
+    if (!TEMPLATE_TOKENS.includes(token)) {
+      return;
+    }
+
+    event.preventDefault();
+    insertTemplateToken(token);
+  }
+
   if (!selectedSheet) {
     return (
       <article className="panel sheets-panel">
@@ -626,18 +671,45 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
         Шаблон сообщения
       </label>
       <div className="tokens" aria-label="Доступные переменные шаблона">
-        <span>{'{имя_клиента}'}</span>
-        <span>{'{список_заказов}'}</span>
-        <span>{'{сумма_наличными}'}</span>
-        <span>{'{сумма_удаленно}'}</span>
+        {TEMPLATE_TOKENS.map((token) => (
+          <button
+            className="token-button"
+            draggable
+            key={token}
+            title="Нажмите, чтобы вставить в шаблон"
+            type="button"
+            onClick={() => insertTemplateToken(token)}
+            onDragStart={(event) => handleTemplateTokenDragStart(event, token)}
+          >
+            {token}
+          </button>
+        ))}
       </div>
-      <textarea
-        id="template"
-        className="template-input"
-        value={template}
-        onChange={(event) => setTemplate(event.target.value)}
-        spellCheck={false}
-      />
+      <div className="template-editor">
+        <div
+          className="template-highlight"
+          aria-hidden="true"
+          style={{ transform: `translateY(-${templateScrollTop}px)` }}
+        >
+          {renderHighlightedTemplate(template)}
+        </div>
+        <textarea
+          ref={templateInputRef}
+          id="template"
+          className="template-input"
+          value={template}
+          onChange={(event) => setTemplate(event.target.value)}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes(TEMPLATE_TOKEN_DRAG_TYPE)) {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+            }
+          }}
+          onDrop={handleTemplateDrop}
+          onScroll={(event) => setTemplateScrollTop(event.currentTarget.scrollTop)}
+          spellCheck={false}
+        />
+      </div>
 
       <div className="action-row">
         <button
@@ -887,6 +959,22 @@ function getRecipientStatusLabel(status: RecipientStatus) {
   };
 
   return labels[status];
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderHighlightedTemplate(value: string) {
+  return value.split(TEMPLATE_TOKEN_PATTERN).map((part, index) =>
+    TEMPLATE_TOKENS.includes(part) ? (
+      <span className="template-highlight-token" key={`${part}-${index}`}>
+        {part}
+      </span>
+    ) : (
+      <span key={`${part}-${index}`}>{part}</span>
+    )
+  );
 }
 
 function BroadcastProgressModal({
