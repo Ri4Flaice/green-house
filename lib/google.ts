@@ -42,11 +42,31 @@ type ValuesResponse = {
 export async function getAccessToken() {
   const session = await auth();
 
+  if (session?.error === "RefreshTokenError") {
+    throw new Error("Сессия Google истекла. Выйдите из аккаунта и войдите через Google заново.");
+  }
+
   if (!session?.accessToken) {
-    throw new Error("Google session is missing an access token");
+    throw new Error("Не удалось получить доступ к Google. Войдите через Google заново.");
   }
 
   return session.accessToken;
+}
+
+function getGoogleApiErrorMessage(status: number, errorText: string) {
+  if (status === 401) {
+    return "Доступ к Google истек или был отозван. Выйдите из аккаунта и войдите через Google заново.";
+  }
+
+  if (status === 403) {
+    return "У аккаунта Google нет доступа к этой таблице или нужные разрешения не выданы.";
+  }
+
+  if (status === 404) {
+    return "Google таблица не найдена. Проверьте, что таблица существует и доступна этому аккаунту.";
+  }
+
+  return `Не удалось выполнить запрос к Google API. Код ошибки: ${status}. ${errorText}`;
 }
 
 async function googleFetch<T>(url: string, accessToken: string): Promise<T> {
@@ -59,7 +79,7 @@ async function googleFetch<T>(url: string, accessToken: string): Promise<T> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Google API request failed: ${response.status} ${errorText}`);
+    throw new Error(getGoogleApiErrorMessage(response.status, errorText));
   }
 
   return response.json() as Promise<T>;
@@ -139,11 +159,11 @@ export async function readSelectedSheetValues(
   const selectedSheets = visibleSheets.filter((sheet) => requestedTitles.has(sheet.title));
 
   if (!visibleSheets.length) {
-    throw new Error("Spreadsheet does not contain a visible data sheet");
+    throw new Error("В Google таблице нет видимых листов с данными.");
   }
 
   if (!selectedSheets.length) {
-    throw new Error("No visible sheets selected");
+    throw new Error("Выбранные листы не найдены или скрыты в Google таблице.");
   }
 
   return Promise.all(

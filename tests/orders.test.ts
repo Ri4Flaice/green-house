@@ -83,7 +83,7 @@ describe("orders parsing", () => {
     expect(result.invoices[0].message).not.toContain("Здравствуйте, 1234!");
   });
 
-  it("does not merge rows with the same phone inside one selected sheet", () => {
+  it("merges duplicate clients inside one selected sheet by phone", () => {
     const result = parseWorkbookSheets([
       {
         sheetTitle: "Тест",
@@ -95,9 +95,16 @@ describe("orders parsing", () => {
       }
     ]);
 
-    expect(result.invoices).toHaveLength(2);
+    expect(result.invoices).toHaveLength(1);
+    expect(result.invoices[0].id).toBe("phone-77011234567");
     expect(result.invoices[0].clientName).toBe("Иван");
-    expect(result.invoices[1].clientName).toBe("Анна");
+    expect(result.invoices[0].sourceLabel).toBe("Тест");
+    expect(result.invoices[0].sheetTitles).toEqual(["Тест"]);
+    expect(result.invoices[0].cashTotal).toBe(4000);
+    expect(result.invoices[0].remoteTotal).toBe(4200);
+    expect(result.invoices[0].message).toContain("Роза — 1500");
+    expect(result.invoices[0].message).toContain("Кактус — 2500");
+    expect(result.invoices[0].message).not.toContain("[Тест]");
   });
 
   it("keeps invalid row sheet titles", () => {

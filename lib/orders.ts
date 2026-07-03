@@ -261,10 +261,6 @@ function mergeSheetTitles(left: string[], right: string[]) {
 }
 
 export function parseWorkbookSheets(sheets: SheetRows[], template = DEFAULT_TEMPLATE): ParseResult {
-  if (sheets.length === 1) {
-    return parseSheetRows(sheets[0].values, template, sheets[0].sheetTitle);
-  }
-
   const invoicesByPhone = new Map<string, ParsedInvoice>();
   const invalidRows: InvalidRow[] = [];
 
