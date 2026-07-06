@@ -686,12 +686,13 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
         ))}
       </div>
       <div className="template-editor">
-        <div
-          className="template-highlight"
-          aria-hidden="true"
-          style={{ transform: `translateY(-${templateScrollTop}px)` }}
-        >
-          {renderHighlightedTemplate(template)}
+        <div className="template-highlight-viewport" aria-hidden="true">
+          <div
+            className="template-highlight-content"
+            style={{ transform: `translateY(-${templateScrollTop}px)` }}
+          >
+            {renderHighlightedTemplate(template)}
+          </div>
         </div>
         <textarea
           ref={templateInputRef}

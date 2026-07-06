@@ -274,20 +274,27 @@ p {
   display: grid;
 }
 
-.template-highlight {
+.template-highlight-viewport {
   position: absolute;
   inset: 0;
   z-index: 0;
   overflow: hidden;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.template-highlight-content {
+  box-sizing: border-box;
+  min-height: 100%;
+  width: 100%;
   padding: 18px;
   border: 2px solid transparent;
-  border-radius: 8px;
   color: var(--text);
   font: inherit;
   line-height: 1.45;
-  pointer-events: none;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+  tab-size: 4;
 }
 
 .template-highlight-token {
@@ -302,6 +309,7 @@ p {
 .template-input {
   position: relative;
   z-index: 1;
+  box-sizing: border-box;
   width: 100%;
   min-height: 158px;
   resize: vertical;
@@ -314,6 +322,7 @@ p {
   background: transparent;
   line-height: 1.45;
   outline: none;
+  tab-size: 4;
 }
 
 .template-input::selection {
