@@ -37,6 +37,12 @@ type PreviewResponse = {
   error?: string;
 };
 
+type PreviewSnapshot = {
+  spreadsheetId: string;
+  sheetTitles: string[];
+  template: string;
+};
+
 type SendResult = {
   invoiceId?: string;
   rowNumber: number;
@@ -115,6 +121,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
   const [sheetSelectionError, setSheetSelectionError] = useState("");
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [previewSnapshot, setPreviewSnapshot] = useState<PreviewSnapshot | null>(null);
   const [previewState, setPreviewState] = useState<LoadState>("idle");
   const [previewError, setPreviewError] = useState("");
   const [sendState, setSendState] = useState<LoadState>("idle");
@@ -223,6 +230,14 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
   const currentReportPage = Math.min(reportPage, reportTotalPages);
   const paginatedInvoices = filteredInvoices.slice((currentPreviewPage - 1) * PAGE_SIZE, currentPreviewPage * PAGE_SIZE);
   const paginatedReportRows = filteredReportRows.slice((currentReportPage - 1) * PAGE_SIZE, currentReportPage * PAGE_SIZE);
+  const isPreviewStale = Boolean(
+    preview &&
+      (!previewSnapshot ||
+        !selectedSheet ||
+        previewSnapshot.spreadsheetId !== selectedSheet.id ||
+        previewSnapshot.template !== template ||
+        !areStringArraysEqual(previewSnapshot.sheetTitles, selectedSheetTitles))
+  );
 
   async function loadSpreadsheets() {
     setSheetsState("loading");
@@ -249,6 +264,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setSpreadsheetSheets([]);
     setSelectedSheetTitles([]);
     setPreview(null);
+    setPreviewSnapshot(null);
     setSendResults([]);
     setSentCount(0);
     setExpandedInvoices([]);
@@ -304,6 +320,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setPreviewState("loading");
     setPreviewError("");
     setPreview(null);
+    setPreviewSnapshot(null);
     setSendResults([]);
     setSentCount(0);
     setExpandedInvoices([]);
@@ -315,6 +332,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
     setSendModalOpen(false);
     setSendModalText("");
     setSendState("idle");
+    const templateForPreview = template;
 
     try {
       const response = await fetch(`/api/spreadsheets/${encodeURIComponent(sheet.id)}/preview`, {
@@ -322,7 +340,7 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ sheetTitles, template })
+        body: JSON.stringify({ sheetTitles, template: templateForPreview })
       });
       const data = (await response.json()) as PreviewResponse;
 
@@ -331,6 +349,11 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
       }
 
       setPreview(data);
+      setPreviewSnapshot({
+        spreadsheetId: sheet.id,
+        sheetTitles: [...sheetTitles],
+        template: templateForPreview
+      });
       setPreviewState("success");
     } catch (error) {
       setPreviewState("error");
@@ -354,6 +377,12 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
 
   async function sendInvoices() {
     if (!preview?.invoices.length || !selectedSheet) {
+      return;
+    }
+
+    if (isPreviewStale) {
+      setSendState("error");
+      setSendError("Шаблон или листы изменились. Обновите предпросмотр перед рассылкой.");
       return;
     }
 
@@ -726,13 +755,20 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
           className="send-button"
           type="button"
           onClick={() => void sendInvoices()}
-          disabled={!preview?.invoices.length || sendState === "loading" || sendModalOpen}
+          disabled={!preview?.invoices.length || isPreviewStale || sendState === "loading" || sendModalOpen}
         >
           {sendState === "loading" ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
           Начать рассылку
         </button>
       </div>
 
+      {isPreviewStale ? (
+        <StatusLine
+          icon={<AlertTriangle size={18} />}
+          text="Шаблон или листы изменились. Обновите предпросмотр перед рассылкой."
+          tone="warning"
+        />
+      ) : null}
       {previewState === "loading" ? <StatusLine icon={<Loader2 className="spin" size={18} />} text="Готовим счета..." /> : null}
       {previewState === "error" ? <StatusLine icon={<AlertTriangle size={18} />} text={previewError} tone="error" /> : null}
 
@@ -966,6 +1002,10 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function areStringArraysEqual(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function renderHighlightedTemplate(value: string) {
   return value.split(TEMPLATE_TOKEN_PATTERN).map((part, index) =>
     TEMPLATE_TOKENS.includes(part) ? (
@@ -1072,7 +1112,15 @@ function BroadcastProgressModal({
   );
 }
 
-function StatusLine({ icon, text, tone = "default" }: { icon: ReactNode; text: string; tone?: "default" | "error" | "success" }) {
+function StatusLine({
+  icon,
+  text,
+  tone = "default"
+}: {
+  icon: ReactNode;
+  text: string;
+  tone?: "default" | "error" | "success" | "warning";
+}) {
   return (
     <div className={`status-line ${tone}`}>
       {icon}

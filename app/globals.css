@@ -10,6 +10,7 @@
   --pink: #f01577;
   --green: #148a5b;
   --red: #c43d4b;
+  --orange: #b86800;
   --shadow: 0 16px 36px rgba(31, 37, 55, 0.1);
 }
 
@@ -354,6 +355,10 @@ p {
 
 .status-line.success {
   color: var(--green);
+}
+
+.status-line.warning {
+  color: var(--orange);
 }
 
 .metrics {
