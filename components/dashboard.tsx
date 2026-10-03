@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type DragEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -105,12 +105,13 @@ type ReportRow = {
 type LoadState = "idle" | "loading" | "error" | "success";
 const PAGE_SIZE = 20;
 const TEMPLATE_TOKENS = ["{имя_клиента}", "{список_заказов}", "{сумма_наличными}", "{сумма_удаленно}"];
-const TEMPLATE_TOKEN_DRAG_TYPE = "text/flower-order-template-token";
 const TEMPLATE_TOKEN_PATTERN = new RegExp(`(${TEMPLATE_TOKENS.map(escapeRegExp).join("|")})`, "g");
 
 export function Dashboard({ userEmail }: { userEmail: string }) {
   const templateInputRef = useRef<HTMLTextAreaElement>(null);
-  const [templateScrollTop, setTemplateScrollTop] = useState(0);
+  const templateHighlightViewportRef = useRef<HTMLDivElement>(null);
+  const templateHighlightContentRef = useRef<HTMLDivElement>(null);
+  const templateSelectionRef = useRef({ start: 0, end: 0 });
   const [spreadsheets, setSpreadsheets] = useState<Spreadsheet[]>([]);
   const [sheetsState, setSheetsState] = useState<LoadState>("idle");
   const [sheetsError, setSheetsError] = useState("");
@@ -142,6 +143,40 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
   useEffect(() => {
     void loadSpreadsheets();
   }, []);
+
+  const selectedSpreadsheetId = selectedSheet?.id;
+  const syncTemplateHighlight = useCallback(() => {
+    const input = templateInputRef.current;
+    const viewport = templateHighlightViewportRef.current;
+    const content = templateHighlightContentRef.current;
+
+    if (!input || !viewport || !content) {
+      return;
+    }
+
+    // client dimensions exclude the borders and native scrollbars.
+    viewport.style.width = `${input.clientWidth}px`;
+    viewport.style.height = `${input.clientHeight}px`;
+    content.style.width = `${input.clientWidth}px`;
+    content.style.transform = `translate(${-input.scrollLeft}px, ${-input.scrollTop}px)`;
+  }, []);
+
+  useLayoutEffect(() => {
+    syncTemplateHighlight();
+  }, [template, selectedSpreadsheetId, syncTemplateHighlight]);
+
+  useLayoutEffect(() => {
+    const input = templateInputRef.current;
+
+    if (!input) {
+      return;
+    }
+
+    const observer = new ResizeObserver(syncTemplateHighlight);
+    observer.observe(input);
+
+    return () => observer.disconnect();
+  }, [selectedSpreadsheetId, syncTemplateHighlight]);
 
   const reportRows = useMemo<ReportRow[]>(() => {
     if (broadcastReport) {
@@ -541,36 +576,36 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
       return;
     }
 
-    const selectionStart = input.selectionStart ?? template.length;
-    const selectionEnd = input.selectionEnd ?? selectionStart;
+    const selectionStart = Math.min(templateSelectionRef.current.start, template.length);
+    const selectionEnd = Math.min(templateSelectionRef.current.end, template.length);
     const nextTemplate = `${template.slice(0, selectionStart)}${token}${template.slice(selectionEnd)}`;
     const nextCursorPosition = selectionStart + token.length;
+    const scrollTop = input.scrollTop;
+    const scrollLeft = input.scrollLeft;
 
+    templateSelectionRef.current = { start: nextCursorPosition, end: nextCursorPosition };
     setTemplate(nextTemplate);
 
     window.requestAnimationFrame(() => {
-      input.focus();
+      if (templateInputRef.current !== input || !input.isConnected) {
+        return;
+      }
+
+      input.focus({ preventScroll: true });
       input.setSelectionRange(nextCursorPosition, nextCursorPosition);
+      input.scrollTop = scrollTop;
+      input.scrollLeft = scrollLeft;
+      syncTemplateHighlight();
     });
+  }
+
+  function rememberTemplateSelection(input: HTMLTextAreaElement) {
+    templateSelectionRef.current = { start: input.selectionStart, end: input.selectionEnd };
   }
 
   function handleTemplateTokenDragStart(event: DragEvent<HTMLButtonElement>, token: string) {
     event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData(TEMPLATE_TOKEN_DRAG_TYPE, token);
     event.dataTransfer.setData("text/plain", token);
-  }
-
-  function handleTemplateDrop(event: DragEvent<HTMLTextAreaElement>) {
-    const token =
-      event.dataTransfer.getData(TEMPLATE_TOKEN_DRAG_TYPE) ||
-      event.dataTransfer.getData("text/plain");
-
-    if (!TEMPLATE_TOKENS.includes(token)) {
-      return;
-    }
-
-    event.preventDefault();
-    insertTemplateToken(token);
   }
 
   if (!selectedSheet) {
@@ -715,12 +750,10 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
         ))}
       </div>
       <div className="template-editor">
-        <div className="template-highlight-viewport" aria-hidden="true">
-          <div
-            className="template-highlight-content"
-            style={{ transform: `translateY(-${templateScrollTop}px)` }}
-          >
+        <div ref={templateHighlightViewportRef} className="template-highlight-viewport" aria-hidden="true">
+          <div ref={templateHighlightContentRef} className="template-highlight-content">
             {renderHighlightedTemplate(template)}
+            {template.endsWith("\n") ? "\u200b" : null}
           </div>
         </div>
         <textarea
@@ -728,15 +761,13 @@ export function Dashboard({ userEmail }: { userEmail: string }) {
           id="template"
           className="template-input"
           value={template}
-          onChange={(event) => setTemplate(event.target.value)}
-          onDragOver={(event) => {
-            if (event.dataTransfer.types.includes(TEMPLATE_TOKEN_DRAG_TYPE)) {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "copy";
-            }
+          onChange={(event) => {
+            rememberTemplateSelection(event.currentTarget);
+            setTemplate(event.currentTarget.value);
           }}
-          onDrop={handleTemplateDrop}
-          onScroll={(event) => setTemplateScrollTop(event.currentTarget.scrollTop)}
+          onSelect={(event) => rememberTemplateSelection(event.currentTarget)}
+          onBlur={(event) => rememberTemplateSelection(event.currentTarget)}
+          onScroll={syncTemplateHighlight}
           spellCheck={false}
         />
       </div>

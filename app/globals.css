@@ -277,25 +277,28 @@ p {
 
 .template-highlight-viewport {
   position: absolute;
-  inset: 0;
+  inset: 2px;
   z-index: 0;
   overflow: hidden;
   border-radius: 8px;
   pointer-events: none;
 }
 
-.template-highlight-content {
+.template-highlight-content,
+.template-input {
   box-sizing: border-box;
-  min-height: 100%;
-  width: 100%;
   padding: 18px;
-  border: 2px solid transparent;
-  color: var(--text);
   font: inherit;
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: break-word;
   tab-size: 4;
+}
+
+.template-highlight-content {
+  min-height: 100%;
+  width: 100%;
+  color: transparent;
 }
 
 .template-highlight-token {
@@ -310,25 +313,15 @@ p {
 .template-input {
   position: relative;
   z-index: 1;
-  box-sizing: border-box;
   width: 100%;
   min-height: 158px;
   resize: vertical;
-  padding: 18px;
   border: 2px solid #8ab7d3;
   border-radius: 8px;
-  color: transparent;
+  color: var(--text);
   caret-color: var(--text);
-  -webkit-text-fill-color: transparent;
   background: transparent;
-  line-height: 1.45;
   outline: none;
-  tab-size: 4;
-}
-
-.template-input::selection {
-  color: transparent;
-  background: rgba(22, 136, 242, 0.16);
 }
 
 .template-input:focus {
